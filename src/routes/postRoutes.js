@@ -1,17 +1,16 @@
 const express = require("express");
 const router = express.Router();
 const supabase = require("../config/supabaseClient");
+const verifyToken = require("../middleware/authMiddleware"); // 👈 1. Middleware import kiya
 
-// 🎥 1. Video Upload Route
-// Android App isi URL par hit karegi: https://your-url.com/api/posts/upload
-router.post("/upload", async (req, res) => {
-    // server.js mein jo 'upload' set kiya tha use yahan call karte hain
+// 🎥 1. Video Upload Route (Ab Secure hai)
+router.post("/upload", verifyToken, async (req, res) => { // 👈 2. verifyToken yahan lagaya
     const upload = req.app.get("upload").single("video");
 
     upload(req, res, async (err) => {
         if (err) {
             console.error("🔥 Multer Error:", err);
-            return res.status(500).json({ success: false, message: "Multer Error: File upload failed" });
+            return res.status(500).json({ success: false, message: "Multer Error" });
         }
 
         const file = req.file;
@@ -20,12 +19,13 @@ router.post("/upload", async (req, res) => {
         }
 
         try {
-            // Unique file name banana (Example: yashora_1710150000.mp4)
-            const fileName = `yashora_${Date.now()}.mp4`;
+            // 3. req.user middleware se aa raha hai
+            const userId = req.user.id; 
+            const fileName = `yashora_${userId}_${Date.now()}.mp4`;
 
-            // ☁️ A. Supabase Storage mein upload karein
+            // ☁️ A. Supabase Storage upload
             const { data, error: storageError } = await supabase.storage
-                .from('yashora-videos') // 👈 Make sure bucket name is exact!
+                .from('yashora-videos')
                 .upload(fileName, file.buffer, {
                     contentType: 'video/mp4',
                     upsert: false
@@ -33,28 +33,27 @@ router.post("/upload", async (req, res) => {
 
             if (storageError) throw storageError;
 
-            // 🔗 B. Public URL hasil karein
+            // 🔗 B. Public URL
             const { data: urlData } = supabase.storage
                 .from('yashora-videos')
                 .getPublicUrl(fileName);
 
             const videoUrl = urlData.publicUrl;
 
-            // 📝 C. Database (posts table) mein entry karein
+            // 📝 C. Database entry (Ab user_id ke saath)
             const { error: dbError } = await supabase
                 .from('posts')
                 .insert([
                     {
                         video_url: videoUrl,
                         description: req.body.description || "Yashora Reel",
+                        user_id: userId, // 👈 4. Video ko user se link kiya
                         created_at: new Date()
                     }
                 ]);
 
             if (dbError) throw dbError;
 
-            // 🎉 D. Success Response
-            console.log("✅ Video Uploaded Successfully:", videoUrl);
             res.status(200).json({
                 success: true,
                 message: "Video live on Yashora!",
@@ -68,7 +67,7 @@ router.post("/upload", async (req, res) => {
     });
 });
 
-// 📱 2. Get All Videos Route (Reels dikhane ke liye)
+// 📱 2. Get All Videos Route (Ye public reh sakta hai)
 router.get("/all", async (req, res) => {
     try {
         const { data, error } = await supabase
