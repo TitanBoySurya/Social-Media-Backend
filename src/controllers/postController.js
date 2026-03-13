@@ -1,82 +1,143 @@
-const supabase = require('../config/supabaseClient');
+const supabase = require("../config/supabaseClient");
 
-// 1. CREATE POST (Cloud Upload)
+// 🎥 CREATE POST (Video Upload)
 exports.createPost = async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const { content } = req.body;
-        let mediaUrl = null;
-        let mediaType = 'text';
+try {
+const userId = req.user.id;
 
-        if (req.file) {
-            const file = req.file;
-            const fileName = `${userId}/${Date.now()}-${file.originalname}`;
-            const { data: uploadData, error: uploadError } = await supabase.storage
-                .from('uploads')
-                .upload(`posts/${fileName}`, file.buffer, { contentType: file.mimetype });
-
-            if (uploadError) throw uploadError;
-
-            const { data: publicUrlData } = supabase.storage.from('uploads').getPublicUrl(`posts/${fileName}`);
-            mediaUrl = publicUrlData.publicUrl;
-            mediaType = file.mimetype.startsWith('video') ? 'video' : 'image';
-        }
-
-        const { data, error } = await supabase
-            .from('posts')
-            .insert([{ user_id: userId, content, media_url: mediaUrl, media_type: mediaType }])
-            .select();
-
-        if (error) throw error;
-        res.status(201).json({ success: true, post: data[0] });
-    } catch (err) {
-        res.status(500).json({ success: false, message: err.message });
+    if (!req.file) {
+        return res.status(400).json({
+            success: false,
+            message: "No video file provided"
+        });
     }
+
+    const file = req.file;
+    const fileName = `yashora_${userId}_${Date.now()}.mp4`;
+
+    // 1️⃣ Upload video to Supabase Storage
+    const { error: storageError } = await supabase.storage
+        .from("yashora-videos")
+        .upload(fileName, file.buffer, {
+            contentType: "video/mp4",
+            upsert: false
+        });
+
+    if (storageError) throw storageError;
+
+    // 2️⃣ Get Public URL
+    const { data: urlData } = supabase.storage
+        .from("yashora-videos")
+        .getPublicUrl(fileName);
+
+    const videoUrl = urlData.publicUrl;
+
+    // 3️⃣ Insert into database
+    const { data, error } = await supabase
+        .from("posts")
+        .insert([
+            {
+                user_id: userId,
+                video_url: videoUrl,
+                description: req.body.description || "Yashora Reel",
+                created_at: new Date()
+            }
+        ])
+        .select();
+
+    if (error) throw error;
+
+    res.status(201).json({
+        success: true,
+        post: data[0]
+    });
+
+} catch (err) {
+    console.error("Upload Error:", err.message);
+
+    res.status(500).json({
+        success: false,
+        message: err.message
+    });
+}
+
 };
 
-// 2. GET ALL POSTS (Iska naam 'getAllPosts' hi hona chahiye)
+// 📱 GET ALL POSTS (Home Feed)
 exports.getAllPosts = async (req, res) => {
-    try {
-        const { data, error } = await supabase
-            .from('posts')
-            .select('*, profiles:user_id(username, avatar_url)')
-            .order('created_at', { ascending: false });
+try {
+const { data, error } = await supabase
+.from("posts")
+.select("*, profiles ( username, avatar_url )")
+.order("created_at", { ascending: false });
 
-        if (error) throw error;
-        res.json({ success: true, posts: data });
-    } catch (err) {
-        res.status(500).json({ success: false, message: err.message });
-    }
+    if (error) throw error;
+
+    res.json({
+        success: true,
+        posts: data
+    });
+
+} catch (err) {
+    res.status(500).json({
+        success: false,
+        message: err.message
+    });
+}
+
 };
 
-// 3. GET FOLLOWING POSTS
-exports.getFollowingPosts = async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const { data: following } = await supabase.from('followers').select('following_id').eq('follower_id', userId);
-        const ids = following.map(f => f.following_id);
-        ids.push(userId);
+// 👤 GET USER POSTS
+exports.getUserPosts = async (req, res) => {
+try {
+const userId = req.params.userId;
 
-        const { data, error } = await supabase
-            .from('posts')
-            .select('*, profiles:user_id(username, avatar_url)')
-            .in('user_id', ids)
-            .order('created_at', { ascending: false });
+    const { data, error } = await supabase
+        .from("posts")
+        .select("*")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false });
 
-        if (error) throw error;
-        res.json({ success: true, posts: data });
-    } catch (err) {
-        res.status(500).json({ success: false, message: err.message });
-    }
+    if (error) throw error;
+
+    res.json({
+        success: true,
+        posts: data
+    });
+
+} catch (err) {
+    res.status(500).json({
+        success: false,
+        message: err.message
+    });
+}
+
 };
 
-// 4. DELETE POST
+// ❌ DELETE POST
 exports.deletePost = async (req, res) => {
-    try {
-        const { data, error } = await supabase.from('posts').delete().eq('id', req.params.id).eq('user_id', req.user.id);
-        if (error) throw error;
-        res.json({ success: true, message: "Post deleted" });
-    } catch (err) {
-        res.status(500).json({ success: false, message: err.message });
-    }
+try {
+const postId = req.params.id;
+const userId = req.user.id;
+
+    const { error } = await supabase
+        .from("posts")
+        .delete()
+        .eq("id", postId)
+        .eq("user_id", userId);
+
+    if (error) throw error;
+
+    res.json({
+        success: true,
+        message: "Post deleted"
+    });
+
+} catch (err) {
+    res.status(500).json({
+        success: false,
+        message: err.message
+    });
+}
+
 };
