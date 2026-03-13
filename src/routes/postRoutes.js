@@ -1,10 +1,10 @@
 const express = require("express");
 const router = express.Router();
 const supabase = require("../config/supabaseClient");
-const verifyToken = require("../middleware/authMiddleware"); // 👈 1. Middleware import kiya
+const verifyToken = require("../middleware/authMiddleware");
 
-// 🎥 1. Video Upload Route (Ab Secure hai)
-router.post("/upload", verifyToken, async (req, res) => { // 👈 2. verifyToken yahan lagaya
+// 🎥 1. Video Upload Route (With Auto-Profile Sync)
+router.post("/upload", verifyToken, async (req, res) => {
     const upload = req.app.get("upload").single("video");
 
     upload(req, res, async (err) => {
@@ -19,12 +19,28 @@ router.post("/upload", verifyToken, async (req, res) => { // 👈 2. verifyToken
         }
 
         try {
-            // 3. req.user middleware se aa raha hai
             const userId = req.user.id; 
-            const fileName = `yashora_${userId}_${Date.now()}.mp4`;
+            const userEmail = req.user.email;
+            const userName = req.user.user_metadata?.full_name || "Yashora User";
 
-            // ☁️ A. Supabase Storage upload
-            const { data, error: storageError } = await supabase.storage
+            // 🛡️ STEP 1: Foreign Key Error Fix (Profile Sync)
+            // Check if user exists in public.profiles
+            const { data: profile } = await supabase
+                .from('profiles')
+                .select('id')
+                .eq('id', userId)
+                .single();
+
+            if (!profile) {
+                console.log("🔄 Syncing new user to profiles table...");
+                await supabase.from('profiles').insert([
+                    { id: userId, email: userEmail, username: userName }
+                ]);
+            }
+
+            // ☁️ STEP 2: Storage Upload
+            const fileName = `yashora_${userId}_${Date.now()}.mp4`;
+            const { data: storageData, error: storageError } = await supabase.storage
                 .from('yashora-videos')
                 .upload(fileName, file.buffer, {
                     contentType: 'video/mp4',
@@ -33,21 +49,21 @@ router.post("/upload", verifyToken, async (req, res) => { // 👈 2. verifyToken
 
             if (storageError) throw storageError;
 
-            // 🔗 B. Public URL
+            // 🔗 STEP 3: Get Public URL
             const { data: urlData } = supabase.storage
                 .from('yashora-videos')
                 .getPublicUrl(fileName);
 
             const videoUrl = urlData.publicUrl;
 
-            // 📝 C. Database entry (Ab user_id ke saath)
+            // 📝 STEP 4: Database Entry
             const { error: dbError } = await supabase
                 .from('posts')
                 .insert([
                     {
                         video_url: videoUrl,
                         description: req.body.description || "Yashora Reel",
-                        user_id: userId, // 👈 4. Video ko user se link kiya
+                        user_id: userId,
                         created_at: new Date()
                     }
                 ]);
@@ -56,7 +72,7 @@ router.post("/upload", verifyToken, async (req, res) => { // 👈 2. verifyToken
 
             res.status(200).json({
                 success: true,
-                message: "Video live on Yashora!",
+                message: "Mubarak ho! Video live on Yashora.",
                 url: videoUrl
             });
 
@@ -67,12 +83,32 @@ router.post("/upload", verifyToken, async (req, res) => { // 👈 2. verifyToken
     });
 });
 
-// 📱 2. Get All Videos Route (Ye public reh sakta hai)
+// 📱 2. Get All Videos (Home Feed)
 router.get("/all", async (req, res) => {
     try {
         const { data, error } = await supabase
             .from('posts')
+            .select(`
+                *,
+                profiles (username, avatar_url)
+            `) // User details bhi saath mein aayengi
+            .order('created_at', { ascending: false });
+
+        if (error) throw error;
+        res.status(200).json({ success: true, data });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// 👤 3. Get User Specific Videos (For Profile Screen)
+router.get("/user/:userId", async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { data, error } = await supabase
+            .from('posts')
             .select('*')
+            .eq('user_id', userId)
             .order('created_at', { ascending: false });
 
         if (error) throw error;
