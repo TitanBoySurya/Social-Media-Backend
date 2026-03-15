@@ -1,25 +1,40 @@
-const supabase = require('../config/supabaseClient');
+const supabase = require("../config/supabaseClient");
 
 // =========================
-// 1. ADD COMMENT
+// 1️⃣ ADD COMMENT
 // =========================
 exports.addComment = async (req, res) => {
   try {
+
     const userId = req.user.id;
-    const postId = req.params.id;
+    const postId = req.params.postId;
     const { content } = req.body;
 
-    if (!content?.trim()) {
-      return res.status(400).json({ success: false, message: "Comment content is required" });
+    if (!content || !content.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Comment content is required"
+      });
     }
 
-    // Supabase Insert
+    // Insert comment
     const { data, error } = await supabase
-      .from('comments')
-      .insert([{ user_id: userId, post_id: postId, content: content.trim() }])
+      .from("comments")
+      .insert([
+        {
+          user_id: userId,
+          post_id: postId,
+          content: content.trim()
+        }
+      ])
       .select(`
-        id, content, created_at,
-        profiles (username, avatar_url)
+        id,
+        content,
+        created_at,
+        profiles (
+          username,
+          avatar_url
+        )
       `)
       .single();
 
@@ -28,30 +43,44 @@ exports.addComment = async (req, res) => {
     res.status(201).json({
       success: true,
       message: "Comment added successfully",
-      data: data
+      data
     });
+
   } catch (err) {
+
     console.error("Add Comment Error:", err.message);
-    res.status(500).json({ success: false, message: "Server error while adding comment" });
+
+    res.status(500).json({
+      success: false,
+      message: "Server error while adding comment"
+    });
   }
 };
 
+
 // =========================
-// 2. GET COMMENTS BY POST
+// 2️⃣ GET COMMENTS BY POST
 // =========================
 exports.getCommentsByPost = async (req, res) => {
-  try {
-    const postId = req.params.id;
 
-    // Fetch comments with user profiles
+  try {
+
+    const postId = req.params.postId;
+
     const { data, error } = await supabase
-      .from('comments')
+      .from("comments")
       .select(`
-        id, content, created_at,
-        profiles (id, username, avatar_url)
+        id,
+        content,
+        created_at,
+        profiles (
+          id,
+          username,
+          avatar_url
+        )
       `)
-      .eq('post_id', postId)
-      .order('created_at', { ascending: false });
+      .eq("post_id", postId)
+      .order("created_at", { ascending: false });
 
     if (error) throw error;
 
@@ -61,8 +90,15 @@ exports.getCommentsByPost = async (req, res) => {
       totalComments: data.length,
       comments: data
     });
+
   } catch (err) {
+
     console.error("Get Comments Error:", err.message);
-    res.status(500).json({ success: false, message: "Database error" });
+
+    res.status(500).json({
+      success: false,
+      message: "Database error"
+    });
   }
+
 };
