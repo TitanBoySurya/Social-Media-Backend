@@ -3,7 +3,7 @@ const router = express.Router()
 
 const supabase = require("../config/supabaseClient")
 const verifyToken = require("../middleware/authMiddleware")
-
+const detectEmbedPlatform = require("../utils/embedValidator")
 
 // =================================
 // 1️⃣ VIDEO UPLOAD
@@ -15,25 +15,21 @@ router.post("/upload", verifyToken, async (req, res) => {
  upload(req, res, async (err) => {
 
   if (err) {
-
    console.error("🔥 Multer Error:", err)
 
    return res.status(500).json({
     success:false,
     message:"File upload error"
    })
-
   }
 
   const file = req.file
 
   if (!file) {
-
    return res.status(400).json({
     success:false,
     message:"No video file provided"
    })
-
   }
 
   try{
@@ -44,9 +40,7 @@ router.post("/upload", verifyToken, async (req, res) => {
    req.user.user_metadata?.full_name ||
    "Yashora User"
 
-   // ==========================
    // CHECK PROFILE
-   // ==========================
    const { data:profile } =
    await supabase
    .from("profiles")
@@ -68,12 +62,9 @@ router.post("/upload", verifyToken, async (req, res) => {
     ])
 
     if(profileError) throw profileError
-
    }
 
-   // ==========================
    // UPLOAD VIDEO
-   // ==========================
    const fileName =
    `yashora_${userId}_${Date.now()}.mp4`
 
@@ -87,9 +78,6 @@ router.post("/upload", verifyToken, async (req, res) => {
 
    if(storageError) throw storageError
 
-   // ==========================
-   // GET PUBLIC URL
-   // ==========================
    const { data:urlData } =
    supabase.storage
    .from("yashora-videos")
@@ -97,9 +85,7 @@ router.post("/upload", verifyToken, async (req, res) => {
 
    const videoUrl = urlData.publicUrl
 
-   // ==========================
    // SAVE POST
-   // ==========================
    const { error:dbError } =
    await supabase
    .from("posts")
@@ -107,9 +93,8 @@ router.post("/upload", verifyToken, async (req, res) => {
     {
      user_id:userId,
      video_url:videoUrl,
-     description:
-     req.body.description ||
-     "Yashora Reel",
+     video_type:"upload",
+     description:req.body.description || "Yashora Reel",
      created_at:new Date()
     }
    ])
@@ -124,10 +109,7 @@ router.post("/upload", verifyToken, async (req, res) => {
 
   }catch(error){
 
-   console.error(
-   "❌ Backend Error:",
-   error.message
-   )
+   console.error("❌ Backend Error:", error.message)
 
    res.status(500).json({
     success:false,
@@ -142,7 +124,60 @@ router.post("/upload", verifyToken, async (req, res) => {
 
 
 // =================================
-// 2️⃣ HOME FEED (PAGINATION)
+// 2️⃣ EMBED VIDEO
+// =================================
+router.post("/embed", verifyToken, async (req, res) => {
+
+ try {
+
+  const { url, description } = req.body
+  const userId = req.user.id
+
+  const validation = detectEmbedPlatform(url)
+
+  if (!validation.valid) {
+
+   return res.status(400).json({
+    success:false,
+    message:validation.message
+   })
+
+  }
+
+  const { error } =
+  await supabase
+  .from("posts")
+  .insert([
+   {
+    user_id:userId,
+    video_type:"embed",
+    embed_platform:validation.platform,
+    embed_url:url,
+    description:description || "Embedded video"
+   }
+  ])
+
+  if(error) throw error
+
+  res.json({
+   success:true,
+   message:"Embed video added"
+  })
+
+ }catch(err){
+
+  res.status(500).json({
+   success:false,
+   message:err.message
+  })
+
+ }
+
+})
+
+
+// =================================
+// 3️⃣ HOME FEED
 // =================================
 router.get("/all", async (req,res)=>{
 
@@ -152,12 +187,8 @@ router.get("/all", async (req,res)=>{
   parseInt(req.query.page) || 1
 
   const limit = 10
-
-  const from =
-  (page - 1) * limit
-
-  const to =
-  from + limit - 1
+  const from = (page - 1) * limit
+  const to = from + limit - 1
 
   const { data,error } =
   await supabase
@@ -169,8 +200,7 @@ router.get("/all", async (req,res)=>{
     avatar_url
    )
   `)
-  .order("created_at",
-  { ascending:false })
+  .order("created_at",{ascending:false})
   .range(from,to)
 
   if(error) throw error
@@ -183,10 +213,7 @@ router.get("/all", async (req,res)=>{
 
  }catch(error){
 
-  console.error(
-  "❌ Feed Error:",
-  error.message
-  )
+  console.error("❌ Feed Error:",error.message)
 
   res.status(500).json({
    success:false,
@@ -199,23 +226,20 @@ router.get("/all", async (req,res)=>{
 
 
 // =================================
-// 3️⃣ USER PROFILE VIDEOS
+// 4️⃣ USER PROFILE VIDEOS
 // =================================
-router.get("/user/:userId",
-async (req,res)=>{
+router.get("/user/:userId", async (req,res)=>{
 
  try{
 
-  const { userId } =
-  req.params
+  const { userId } = req.params
 
   const { data,error } =
   await supabase
   .from("posts")
   .select("*")
   .eq("user_id",userId)
-  .order("created_at",
-  { ascending:false })
+  .order("created_at",{ascending:false})
 
   if(error) throw error
 
@@ -226,10 +250,7 @@ async (req,res)=>{
 
  }catch(error){
 
-  console.error(
-  "❌ Profile Videos Error:",
-  error.message
-  )
+  console.error("❌ Profile Videos Error:",error.message)
 
   res.status(500).json({
    success:false,
@@ -242,19 +263,14 @@ async (req,res)=>{
 
 
 // =================================
-// 4️⃣ DELETE POST
+// 5️⃣ DELETE POST
 // =================================
-router.delete("/:id",
-verifyToken,
-async(req,res)=>{
+router.delete("/:id", verifyToken, async(req,res)=>{
 
  try{
 
-  const postId =
-  req.params.id
-
-  const userId =
-  req.user.id
+  const postId = req.params.id
+  const userId = req.user.id
 
   const { data:post,error } =
   await supabase
@@ -265,13 +281,16 @@ async(req,res)=>{
 
   if(error) throw error
 
-  const fileName =
-  post.video_url.split("/")
-  .pop()
+  if(post.video_url){
 
-  await supabase.storage
-  .from("yashora-videos")
-  .remove([fileName])
+   const fileName =
+   post.video_url.split("/").pop()
+
+   await supabase.storage
+   .from("yashora-videos")
+   .remove([fileName])
+
+  }
 
   await supabase
   .from("posts")
@@ -294,6 +313,5 @@ async(req,res)=>{
  }
 
 })
-
 
 module.exports = router
