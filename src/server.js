@@ -122,6 +122,7 @@ app.use("/api/follow",require("./routes/followRoutes"))
 app.use("/api/chat",require("./routes/chatRoutes"))
 app.use("/api/notifications",require("./routes/notificationRoutes"))
 app.use("/api/monetization",require("./routes/monetizationRoutes"))
+app.use("/api/system", require("./routes/systemDebugRoutes"))
 
 // ===============================
 // GLOBAL ERROR HANDLER
