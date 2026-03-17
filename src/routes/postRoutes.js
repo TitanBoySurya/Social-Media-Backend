@@ -1,317 +1,255 @@
-const express = require("express")
-const router = express.Router()
+const express = require("express");
+const router = express.Router();
 
-const supabase = require("../config/supabaseClient")
-const verifyToken = require("../middleware/authMiddleware")
-const detectEmbedPlatform = require("../utils/embedValidator")
+const supabase = require("../config/supabaseClient");
+const verifyToken = require("../middleware/authMiddleware");
 
 // =================================
 // 1️⃣ VIDEO UPLOAD
 // =================================
 router.post("/upload", verifyToken, async (req, res) => {
 
- const upload = req.app.get("upload").single("video")
+  const upload = req.app.get("upload").single("video");
 
- upload(req, res, async (err) => {
+  upload(req, res, async (err) => {
 
-  if (err) {
-   console.error("🔥 Multer Error:", err)
-
-   return res.status(500).json({
-    success:false,
-    message:"File upload error"
-   })
-  }
-
-  const file = req.file
-
-  if (!file) {
-   return res.status(400).json({
-    success:false,
-    message:"No video file provided"
-   })
-  }
-
-  try{
-
-   const userId = req.user.id
-   const userEmail = req.user.email
-   const userName =
-   req.user.user_metadata?.full_name ||
-   "Yashora User"
-
-   // CHECK PROFILE
-   const { data:profile } =
-   await supabase
-   .from("profiles")
-   .select("id")
-   .eq("id",userId)
-   .maybeSingle()
-
-   if(!profile){
-
-    const { error:profileError } =
-    await supabase
-    .from("profiles")
-    .insert([
-     {
-      id:userId,
-      email:userEmail,
-      username:userName
-     }
-    ])
-
-    if(profileError) throw profileError
-   }
-
-   // UPLOAD VIDEO
-   const fileName =
-   `yashora_${userId}_${Date.now()}.mp4`
-
-   const { error:storageError } =
-   await supabase.storage
-   .from("yashora-videos")
-   .upload(fileName,file.buffer,{
-    contentType:"video/mp4",
-    upsert:false
-   })
-
-   if(storageError) throw storageError
-
-   const { data:urlData } =
-   supabase.storage
-   .from("yashora-videos")
-   .getPublicUrl(fileName)
-
-   const videoUrl = urlData.publicUrl
-
-   // SAVE POST
-   const { error:dbError } =
-   await supabase
-   .from("posts")
-   .insert([
-    {
-     user_id:userId,
-     video_url:videoUrl,
-     video_type:"upload",
-     description:req.body.description || "Yashora Reel",
-     created_at:new Date()
+    if (err) {
+      console.error("🔥 Multer Error:", err);
+      return res.status(500).json({
+        success: false,
+        message: "File upload error"
+      });
     }
-   ])
 
-   if(dbError) throw dbError
+    const file = req.file;
 
-   res.status(200).json({
-    success:true,
-    message:"Video uploaded successfully",
-    video_url:videoUrl
-   })
+    if (!file) {
+      return res.status(400).json({
+        success: false,
+        message: "No video file provided"
+      });
+    }
 
-  }catch(error){
+    try {
 
-   console.error("❌ Backend Error:", error.message)
+      // ✅ SAFE USER DATA
+      const userId = req.user?.id;
+      const userEmail = req.user?.email;
+      const userName = userEmail || "Yashora User";
 
-   res.status(500).json({
-    success:false,
-    message:error.message
-   })
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          message: "Unauthorized"
+        });
+      }
 
+      // ==========================
+      // UPSERT PROFILE (FIXED)
+      // ==========================
+      const { error: profileError } = await supabase
+        .from("profiles")
+        .upsert([
+          {
+            id: userId,
+            email: userEmail,
+            username: userName
+          }
+        ]);
+
+      if (profileError) throw profileError;
+
+      // ==========================
+      // UPLOAD VIDEO
+      // ==========================
+      const fileName = `yashora_${userId}_${Date.now()}.mp4`;
+
+      const { error: storageError } = await supabase.storage
+        .from("yashora-videos")
+        .upload(fileName, file.buffer, {
+          contentType: "video/mp4",
+          upsert: false
+        });
+
+      if (storageError) throw storageError;
+
+      // ==========================
+      // GET PUBLIC URL
+      // ==========================
+      const { data: urlData } = supabase.storage
+        .from("yashora-videos")
+        .getPublicUrl(fileName);
+
+      const videoUrl = urlData.publicUrl;
+
+      // ==========================
+      // SAVE POST (WITH DEBUG)
+      // ==========================
+      const { data: postData, error: dbError } = await supabase
+        .from("posts")
+        .insert([
+          {
+            user_id: userId,
+            video_url: videoUrl,
+            description: req.body.description || "Yashora Reel"
+          }
+        ])
+        .select();
+
+      if (dbError) throw dbError;
+
+      console.log("✅ POST SAVED:", postData);
+
+      res.status(200).json({
+        success: true,
+        message: "Video uploaded successfully",
+        video_url: videoUrl
+      });
+
+    } catch (error) {
+
+      console.error("❌ Backend Error:", error.message);
+
+      res.status(500).json({
+        success: false,
+        message: error.message
+      });
+    }
+
+  });
+});
+
+
+// =================================
+// 2️⃣ HOME FEED (PAGINATION)
+// =================================
+router.get("/all", async (req, res) => {
+
+  try {
+
+    const page = parseInt(req.query.page) || 1;
+    const limit = 10;
+
+    const from = (page - 1) * limit;
+    const to = from + limit - 1;
+
+    const { data, error } = await supabase
+      .from("posts")
+      .select(`
+        *,
+        profiles (
+          username,
+          avatar_url
+        )
+      `)
+      .order("created_at", { ascending: false })
+      .range(from, to);
+
+    if (error) throw error;
+
+    res.status(200).json({
+      success: true,
+      page,
+      data
+    });
+
+  } catch (error) {
+
+    console.error("❌ Feed Error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
   }
-
- })
-
-})
+});
 
 
 // =================================
-// 2️⃣ EMBED VIDEO
+// 3️⃣ USER PROFILE VIDEOS
 // =================================
-router.post("/embed", verifyToken, async (req, res) => {
+router.get("/user/:userId", async (req, res) => {
 
- try {
+  try {
 
-  const { url, description } = req.body
-  const userId = req.user.id
+    const { userId } = req.params;
 
-  const validation = detectEmbedPlatform(url)
+    const { data, error } = await supabase
+      .from("posts")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false });
 
-  if (!validation.valid) {
+    if (error) throw error;
 
-   return res.status(400).json({
-    success:false,
-    message:validation.message
-   })
+    res.status(200).json({
+      success: true,
+      data
+    });
 
+  } catch (error) {
+
+    console.error("❌ Profile Videos Error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
   }
-
-  const { error } =
-  await supabase
-  .from("posts")
-  .insert([
-   {
-    user_id:userId,
-    video_type:"embed",
-    embed_platform:validation.platform,
-    embed_url:url,
-    description:description || "Embedded video"
-   }
-  ])
-
-  if(error) throw error
-
-  res.json({
-   success:true,
-   message:"Embed video added"
-  })
-
- }catch(err){
-
-  res.status(500).json({
-   success:false,
-   message:err.message
-  })
-
- }
-
-})
+});
 
 
 // =================================
-// 3️⃣ HOME FEED
+// 4️⃣ DELETE POST
 // =================================
-router.get("/all", async (req,res)=>{
+router.delete("/:id", verifyToken, async (req, res) => {
 
- try{
+  try {
 
-  const page =
-  parseInt(req.query.page) || 1
+    const postId = req.params.id;
+    const userId = req.user?.id;
 
-  const limit = 10
-  const from = (page - 1) * limit
-  const to = from + limit - 1
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized"
+      });
+    }
 
-  const { data,error } =
-  await supabase
-  .from("posts")
-  .select(`
-   *,
-   profiles (
-    username,
-    avatar_url
-   )
-  `)
-  .order("created_at",{ascending:false})
-  .range(from,to)
+    const { data: post, error } = await supabase
+      .from("posts")
+      .select("video_url")
+      .eq("id", postId)
+      .single();
 
-  if(error) throw error
+    if (error) throw error;
 
-  res.status(200).json({
-   success:true,
-   page,
-   data
-  })
+    const fileName = post.video_url.split("/").pop();
 
- }catch(error){
+    await supabase.storage
+      .from("yashora-videos")
+      .remove([fileName]);
 
-  console.error("❌ Feed Error:",error.message)
+    await supabase
+      .from("posts")
+      .delete()
+      .eq("id", postId)
+      .eq("user_id", userId);
 
-  res.status(500).json({
-   success:false,
-   message:error.message
-  })
+    res.json({
+      success: true,
+      message: "Post deleted"
+    });
 
- }
+  } catch (error) {
 
-})
+    console.error("❌ Delete Error:", error.message);
 
-
-// =================================
-// 4️⃣ USER PROFILE VIDEOS
-// =================================
-router.get("/user/:userId", async (req,res)=>{
-
- try{
-
-  const { userId } = req.params
-
-  const { data,error } =
-  await supabase
-  .from("posts")
-  .select("*")
-  .eq("user_id",userId)
-  .order("created_at",{ascending:false})
-
-  if(error) throw error
-
-  res.status(200).json({
-   success:true,
-   data
-  })
-
- }catch(error){
-
-  console.error("❌ Profile Videos Error:",error.message)
-
-  res.status(500).json({
-   success:false,
-   message:error.message
-  })
-
- }
-
-})
-
-
-// =================================
-// 5️⃣ DELETE POST
-// =================================
-router.delete("/:id", verifyToken, async(req,res)=>{
-
- try{
-
-  const postId = req.params.id
-  const userId = req.user.id
-
-  const { data:post,error } =
-  await supabase
-  .from("posts")
-  .select("video_url")
-  .eq("id",postId)
-  .single()
-
-  if(error) throw error
-
-  if(post.video_url){
-
-   const fileName =
-   post.video_url.split("/").pop()
-
-   await supabase.storage
-   .from("yashora-videos")
-   .remove([fileName])
-
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
   }
+});
 
-  await supabase
-  .from("posts")
-  .delete()
-  .eq("id",postId)
-  .eq("user_id",userId)
-
-  res.json({
-   success:true,
-   message:"Post deleted"
-  })
-
- }catch(error){
-
-  res.status(500).json({
-   success:false,
-   message:error.message
-  })
-
- }
-
-})
-
-module.exports = router
+module.exports = router;
