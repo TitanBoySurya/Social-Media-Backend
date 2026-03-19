@@ -35,8 +35,7 @@ router.post("/save", verifyToken, async (req, res) => {
 });
 
 // ===============================
-// ❤️ TOGGLE LIKE
-// ===============================
+// ❤️ TOGGLE LIKE (RPC-free)
 router.post("/toggle-like/:postId", verifyToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -50,14 +49,31 @@ router.post("/toggle-like/:postId", verifyToken, async (req, res) => {
       .maybeSingle();
 
     if (existing) {
-      await supabase.from("likes").delete().eq("post_id", postId).eq("user_id", userId);
-      await supabase.rpc("decrement_likes", { row_id: postId });
+      await supabase
+        .from("likes")
+        .delete()
+        .eq("post_id", postId)
+        .eq("user_id", userId);
+
+      // decrement likes_count directly
+      await supabase
+        .from("posts")
+        .update({ likes_count: supabase.raw("likes_count - 1") })
+        .eq("id", postId);
+
       if (req.io) req.io.emit("likeUpdated", { postId, userId, liked: false });
       return res.json({ success: true, liked: false });
     }
 
+    // insert like
     await supabase.from("likes").insert([{ post_id: postId, user_id: userId }]);
-    await supabase.rpc("increment_likes", { row_id: postId });
+
+    // increment likes_count directly
+    await supabase
+      .from("posts")
+      .update({ likes_count: supabase.raw("likes_count + 1") })
+      .eq("id", postId);
+
     if (req.io) req.io.emit("likeUpdated", { postId, userId, liked: true });
     res.json({ success: true, liked: true });
   } catch (err) {
@@ -67,8 +83,7 @@ router.post("/toggle-like/:postId", verifyToken, async (req, res) => {
 });
 
 // ===============================
-// 🏠 HOME FEED (GLOBAL, sabki videos)
-// ===============================
+// 🏠 HOME FEED (GLOBAL FEED - sabki videos)
 router.get(["/feed", "/all"], verifyToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -106,7 +121,6 @@ router.get(["/feed", "/all"], verifyToken, async (req, res) => {
 
 // ===============================
 // 👤 MY POSTS
-// ===============================
 router.get("/my-posts", verifyToken, async (req, res) => {
   try {
     const { data } = await supabase
@@ -122,7 +136,6 @@ router.get("/my-posts", verifyToken, async (req, res) => {
 
 // ===============================
 // 📊 MY STATS
-// ===============================
 router.get("/my-stats", verifyToken, async (req, res) => {
   try {
     const { count } = await supabase
@@ -137,7 +150,6 @@ router.get("/my-stats", verifyToken, async (req, res) => {
 
 // ===============================
 // 💬 ADD COMMENT
-// ===============================
 router.post("/comment/:postId", verifyToken, async (req, res) => {
   try {
     const { comment_text } = req.body;
@@ -154,7 +166,11 @@ router.post("/comment/:postId", verifyToken, async (req, res) => {
       .select(`*, profiles(username, avatar_url)`)
       .single();
 
-    await supabase.rpc("increment_comments", { row_id: req.params.postId });
+    // increment comments_count directly
+    await supabase
+      .from("posts")
+      .update({ comments_count: supabase.raw("comments_count + 1") })
+      .eq("id", req.params.postId);
 
     if (req.io) req.io.emit("commentAdded", { postId: req.params.postId, userId: req.user.id });
 
@@ -166,10 +182,13 @@ router.post("/comment/:postId", verifyToken, async (req, res) => {
 
 // ===============================
 // 👁️ VIEW COUNT
-// ===============================
 router.post("/view/:postId", async (req, res) => {
   try {
-    await supabase.rpc("increment_views", { row_id: req.params.postId });
+    await supabase
+      .from("posts")
+      .update({ views_count: supabase.raw("views_count + 1") })
+      .eq("id", req.params.postId);
+
     res.json({ success: true });
   } catch {
     res.status(500).json({ success: false });
@@ -178,7 +197,6 @@ router.post("/view/:postId", async (req, res) => {
 
 // ===============================
 // 🔍 GLOBAL SEARCH (Users + Videos)
-// ===============================
 router.get("/search/:query", verifyToken, async (req, res) => {
   try {
     const query = req.params.query;
@@ -201,7 +219,6 @@ router.get("/search/:query", verifyToken, async (req, res) => {
 
 // ===============================
 // ❤️ FOLLOW / UNFOLLOW
-// ===============================
 router.post("/follow/toggle/:userId", verifyToken, async (req, res) => {
   try {
     const followerId = req.user.id;
@@ -245,6 +262,7 @@ router.get("/followers/:userId", async (req, res) => {
       .from("follows")
       .select(`follower_id, profiles(username, avatar_url)`)
       .eq("following_id", req.params.userId);
+
     res.json({ success: true, data });
   } catch {
     res.status(500).json({ success: false });
@@ -258,6 +276,7 @@ router.get("/following/:userId", async (req, res) => {
       .from("follows")
       .select(`following_id, profiles(username, avatar_url)`)
       .eq("follower_id", req.params.userId);
+
     res.json({ success: true, data });
   } catch {
     res.status(500).json({ success: false });
