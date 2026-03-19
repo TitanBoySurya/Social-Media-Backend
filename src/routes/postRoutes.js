@@ -3,15 +3,13 @@ const router = express.Router();
 const supabase = require("../config/supabaseClient");
 const verifyToken = require("../middleware/authMiddleware");
 
-
-// 🚀 1. SAVE VIDEO
+// 🚀 SAVE VIDEO
 router.post("/save", verifyToken, async (req, res) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user.id;
     const { video_url, description } = req.body;
 
-    if (!userId) return res.status(401).json({ success: false });
-    if (!video_url) return res.status(400).json({ success: false });
+    if (!video_url) return res.status(400).json({ success: false, message: "Video URL missing" });
 
     const { data, error } = await supabase
       .from("posts")
@@ -35,8 +33,7 @@ router.post("/save", verifyToken, async (req, res) => {
   }
 });
 
-
-// ❤️ 2. TOGGLE LIKE (FINAL FIXED + SAFE)
+// ❤️ TOGGLE LIKE
 router.post("/toggle-like/:postId", verifyToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -50,32 +47,27 @@ router.post("/toggle-like/:postId", verifyToken, async (req, res) => {
       .maybeSingle();
 
     if (existing) {
-      // ❌ UNLIKE
-      await supabase
-        .from("likes")
+      await supabase.from("likes")
         .delete()
         .eq("post_id", postId)
         .eq("user_id", userId);
 
       await supabase.rpc("decrement_likes", { row_id: postId });
 
+      // Notify realtime via Socket
+      req.io.emit("likeUpdated", { postId, userId, liked: false });
+
       return res.json({ success: true, liked: false });
-
-    } else {
-      // ❤️ LIKE (duplicate safe)
-      const { error } = await supabase
-        .from("likes")
-        .upsert(
-          [{ post_id: postId, user_id: userId }],
-          { onConflict: ["post_id", "user_id"] }
-        );
-
-      if (error) throw error;
-
-      await supabase.rpc("increment_likes", { row_id: postId });
-
-      return res.json({ success: true, liked: true });
     }
+
+    await supabase.from("likes")
+      .insert([{ post_id: postId, user_id: userId }]);
+
+    await supabase.rpc("increment_likes", { row_id: postId });
+
+    req.io.emit("likeUpdated", { postId, userId, liked: true });
+
+    res.json({ success: true, liked: true });
 
   } catch (err) {
     console.error("LIKE ERROR:", err.message);
@@ -83,26 +75,31 @@ router.post("/toggle-like/:postId", verifyToken, async (req, res) => {
   }
 });
 
-
-// 🏠 3. HOME FEED (OPTIMIZED + isLiked)
-router.get("/all", verifyToken, async (req, res) => {
+// 🏠 PERSONALIZED FEED + INFINITE SCROLL + PRELOAD
+router.get("/feed", verifyToken, async (req, res) => {
   try {
     const userId = req.user.id;
-
     const page = parseInt(req.query.page) || 1;
-    const limit = 10;
+    const limit = parseInt(req.query.limit) || 10;
     const from = (page - 1) * limit;
+    const to = from + limit - 1;
 
-    // 🔥 get posts
-    const { data: posts, error } = await supabase
+    // 1️⃣ Get following IDs
+    const { data: following } = await supabase
+      .from("follows")
+      .select("following_id")
+      .eq("follower_id", userId);
+
+    const followingIds = following.map(f => f.following_id);
+
+    // 2️⃣ Fetch posts: following first, then global
+    const { data: posts } = await supabase
       .from("posts")
       .select(`*, profiles(username, avatar_url)`)
       .order("created_at", { ascending: false })
-      .range(from, from + limit - 1);
+      .range(from, to);
 
-    if (error) throw error;
-
-    // 🔥 get user likes separately (FAST)
+    // 3️⃣ Mark liked posts
     const { data: likes } = await supabase
       .from("likes")
       .select("post_id")
@@ -110,12 +107,14 @@ router.get("/all", verifyToken, async (req, res) => {
 
     const likedSet = new Set(likes.map(l => l.post_id));
 
-    const formatted = posts.map(post => ({
+    const feed = posts.map(post => ({
       ...post,
-      isLiked: likedSet.has(post.id)
+      isLiked: likedSet.has(post.id),
+      // CDN-ready URL
+      cdn_url: post.video_url // replace if using CDN mapping
     }));
 
-    res.json({ success: true, data: formatted });
+    res.json({ success: true, data: feed, page, limit });
 
   } catch (err) {
     console.error("FEED ERROR:", err.message);
@@ -123,117 +122,91 @@ router.get("/all", verifyToken, async (req, res) => {
   }
 });
 
-
-// 💬 4. ADD COMMENT
-router.post("/comment/:postId", verifyToken, async (req, res) => {
+// 👤 MY POSTS
+router.get("/my-posts", verifyToken, async (req, res) => {
   try {
-    const userId = req.user.id;
-    const postId = req.params.postId;
-    const { comment_text } = req.body;
-
-    if (!comment_text) {
-      return res.status(400).json({ success: false });
-    }
-
-    const { data, error } = await supabase
-      .from("comments")
-      .insert([{ post_id: postId, user_id: userId, comment_text }])
-      .select(`*, profiles(username, avatar_url)`)
-      .single();
-
-    if (error) throw error;
-
-    await supabase.rpc("increment_comments", { row_id: postId });
-
-    res.json({ success: true, data });
-
-  } catch (err) {
-    console.error("COMMENT ERROR:", err.message);
-    res.status(500).json({ success: false });
-  }
-});
-
-
-// 💬 5. GET COMMENTS
-router.get("/comments/:postId", async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from("comments")
-      .select(`*, profiles(username, avatar_url)`)
-      .eq("post_id", req.params.postId)
-      .order("created_at", { ascending: false });
-
-    if (error) throw error;
-
-    res.json({ success: true, data });
-
-  } catch (err) {
-    res.status(500).json({ success: false });
-  }
-});
-
-
-// 👁️ 6. VIEW COUNT (OPTIMIZED)
-router.post("/view/:postId", async (req, res) => {
-  try {
-    const postId = req.params.postId;
-
-    await supabase.rpc("increment_views", { row_id: postId });
-
-    res.json({ success: true });
-
-  } catch (err) {
-    res.status(500).json({ success: false });
-  }
-});
-
-
-// 👤 7. USER POSTS
-router.get("/user/:userId", async (req, res) => {
-  try {
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from("posts")
       .select("*")
-      .eq("user_id", req.params.userId)
+      .eq("user_id", req.user.id)
       .order("created_at", { ascending: false });
-
-    if (error) throw error;
 
     res.json({ success: true, data });
 
-  } catch (err) {
+  } catch {
     res.status(500).json({ success: false });
   }
 });
 
-
-// 🗑 8. DELETE POST
-router.delete("/:id", verifyToken, async (req, res) => {
+// 📊 MY STATS
+router.get("/my-stats", verifyToken, async (req, res) => {
   try {
-    const userId = req.user.id;
-    const postId = req.params.id;
-
-    const { data: post } = await supabase
+    const { count } = await supabase
       .from("posts")
-      .select("video_url")
-      .eq("id", postId)
+      .select("*", { count: "exact", head: true })
+      .eq("user_id", req.user.id);
+
+    res.json({ success: true, posts: count || 0 });
+
+  } catch {
+    res.status(500).json({ success: false });
+  }
+});
+
+// 💬 ADD COMMENT
+router.post("/comment/:postId", verifyToken, async (req, res) => {
+  try {
+    const { comment_text } = req.body;
+    if (!comment_text) return res.status(400).json({ success: false });
+
+    const { data } = await supabase
+      .from("comments")
+      .insert([{
+        post_id: req.params.postId,
+        user_id: req.user.id,
+        comment_text
+      }])
+      .select(`*, profiles(username, avatar_url)`)
       .single();
 
-    if (post) {
-      const file = post.video_url.split("/").pop();
-      await supabase.storage.from("yashora-videos").remove([file]);
-    }
+    await supabase.rpc("increment_comments", { row_id: req.params.postId });
 
-    await supabase
-      .from("posts")
-      .delete()
-      .eq("id", postId)
-      .eq("user_id", userId);
+    res.json({ success: true, data });
 
+  } catch {
+    res.status(500).json({ success: false });
+  }
+});
+
+// 👁️ VIEW COUNT
+router.post("/view/:postId", async (req, res) => {
+  try {
+    await supabase.rpc("increment_views", { row_id: req.params.postId });
     res.json({ success: true });
+  } catch {
+    res.status(500).json({ success: false });
+  }
+});
 
-  } catch (err) {
-    console.error("DELETE ERROR:", err.message);
+// 🔍 GLOBAL SEARCH (users + videos)
+router.get("/search/:query", verifyToken, async (req, res) => {
+  try {
+    const query = req.params.query;
+
+    const { data: users } = await supabase
+      .from("profiles")
+      .select("id, username, avatar_url")
+      .ilike("username", `%${query}%`);
+
+    const { data: videos } = await supabase
+      .from("posts")
+      .select(`id, video_url, description, profiles(username, avatar_url)`)
+      .ilike("description", `%${query}%`)
+      .order("created_at", { ascending: false });
+
+    res.json({ success: true, users, videos });
+
+  } catch {
     res.status(500).json({ success: false });
   }
 });

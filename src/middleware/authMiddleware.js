@@ -1,45 +1,64 @@
 const jwt = require("jsonwebtoken");
 
 const verifyToken = (req, res, next) => {
-try {
+  try {
 
-    // Authorization header se token lena
-    const authHeader = req.headers["authorization"];
-    const token = authHeader && authHeader.split(" ")[1];
+    // 🔥 Authorization header check
+    const authHeader = req.headers.authorization;
 
-    if (!token) {
-        return res.status(403).json({
-            success: false,
-            message: "Access Denied: No Token Provided"
-        });
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({
+        success: false,
+        message: "Token missing or malformed"
+      });
     }
 
-    const secret = process.env.JWT_SECRET || "YashoraSecretKey";
+    const token = authHeader.split(" ")[1];
 
-    jwt.verify(token, secret, (err, decoded) => {
-
-        if (err) {
-            return res.status(401).json({
-                success: false,
-                message: "Invalid or Expired Token"
-            });
-        }
-
-        // Token se user data request me daalna
-        req.user = decoded;
-
-        next();
-    });
-
-} catch (error) {
-    console.error("🔥 Middleware Error:", error.message);
-
-    res.status(500).json({
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      console.error("❌ JWT_SECRET missing in .env");
+      return res.status(500).json({
         success: false,
-        message: "Internal Server Error in Auth"
-    });
-}
+        message: "Server configuration error"
+      });
+    }
 
+    // 🔥 Verify token (SYNC version → better performance)
+    const decoded = jwt.verify(token, secret);
+
+    // 🔥 Important: only required fields attach karo
+    req.user = {
+      id: decoded.id,
+      email: decoded.email
+    };
+
+    next();
+
+  } catch (error) {
+
+    console.error("🔥 AUTH ERROR:", error.message);
+
+    // 🔥 Specific error handling
+    if (error.name === "TokenExpiredError") {
+      return res.status(401).json({
+        success: false,
+        message: "Token expired"
+      });
+    }
+
+    if (error.name === "JsonWebTokenError") {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid token"
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Authentication failed"
+    });
+  }
 };
 
 module.exports = verifyToken;
