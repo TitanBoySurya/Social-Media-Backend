@@ -36,7 +36,7 @@ router.post("/save", verifyToken, async (req, res) => {
 });
 
 
-// ❤️ 2. TOGGLE LIKE (FINAL FIXED)
+// ❤️ 2. TOGGLE LIKE (FINAL FIXED + SAFE)
 router.post("/toggle-like/:postId", verifyToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -44,7 +44,7 @@ router.post("/toggle-like/:postId", verifyToken, async (req, res) => {
 
     const { data: existing } = await supabase
       .from("likes")
-      .select("*")
+      .select("id")
       .eq("post_id", postId)
       .eq("user_id", userId)
       .maybeSingle();
@@ -62,10 +62,15 @@ router.post("/toggle-like/:postId", verifyToken, async (req, res) => {
       return res.json({ success: true, liked: false });
 
     } else {
-      // ❤️ LIKE
-      await supabase
+      // ❤️ LIKE (duplicate safe)
+      const { error } = await supabase
         .from("likes")
-        .insert([{ post_id: postId, user_id: userId }]);
+        .upsert(
+          [{ post_id: postId, user_id: userId }],
+          { onConflict: ["post_id", "user_id"] }
+        );
+
+      if (error) throw error;
 
       await supabase.rpc("increment_likes", { row_id: postId });
 
@@ -79,30 +84,35 @@ router.post("/toggle-like/:postId", verifyToken, async (req, res) => {
 });
 
 
-// 🏠 3. HOME FEED (🔥 WITH isLiked FIX)
+// 🏠 3. HOME FEED (OPTIMIZED + isLiked)
 router.get("/all", verifyToken, async (req, res) => {
   try {
     const userId = req.user.id;
+
     const page = parseInt(req.query.page) || 1;
     const limit = 10;
     const from = (page - 1) * limit;
 
-    const { data, error } = await supabase
+    // 🔥 get posts
+    const { data: posts, error } = await supabase
       .from("posts")
-      .select(`
-        *,
-        profiles(username, avatar_url),
-        likes(user_id)
-      `)
+      .select(`*, profiles(username, avatar_url)`)
       .order("created_at", { ascending: false })
       .range(from, from + limit - 1);
 
     if (error) throw error;
 
-    // 🔥 Add isLiked
-    const formatted = data.map(post => ({
+    // 🔥 get user likes separately (FAST)
+    const { data: likes } = await supabase
+      .from("likes")
+      .select("post_id")
+      .eq("user_id", userId);
+
+    const likedSet = new Set(likes.map(l => l.post_id));
+
+    const formatted = posts.map(post => ({
       ...post,
-      isLiked: post.likes.some(like => like.user_id === userId)
+      isLiked: likedSet.has(post.id)
     }));
 
     res.json({ success: true, data: formatted });
@@ -138,12 +148,32 @@ router.post("/comment/:postId", verifyToken, async (req, res) => {
     res.json({ success: true, data });
 
   } catch (err) {
+    console.error("COMMENT ERROR:", err.message);
     res.status(500).json({ success: false });
   }
 });
 
 
-// 👁️ 5. VIEW COUNT
+// 💬 5. GET COMMENTS
+router.get("/comments/:postId", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("comments")
+      .select(`*, profiles(username, avatar_url)`)
+      .eq("post_id", req.params.postId)
+      .order("created_at", { ascending: false });
+
+    if (error) throw error;
+
+    res.json({ success: true, data });
+
+  } catch (err) {
+    res.status(500).json({ success: false });
+  }
+});
+
+
+// 👁️ 6. VIEW COUNT (OPTIMIZED)
 router.post("/view/:postId", async (req, res) => {
   try {
     const postId = req.params.postId;
@@ -158,7 +188,7 @@ router.post("/view/:postId", async (req, res) => {
 });
 
 
-// 👤 6. USER VIDEOS
+// 👤 7. USER POSTS
 router.get("/user/:userId", async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -177,7 +207,7 @@ router.get("/user/:userId", async (req, res) => {
 });
 
 
-// 🗑 7. DELETE POST
+// 🗑 8. DELETE POST
 router.delete("/:id", verifyToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -203,25 +233,7 @@ router.delete("/:id", verifyToken, async (req, res) => {
     res.json({ success: true });
 
   } catch (err) {
-    res.status(500).json({ success: false });
-  }
-});
-
-
-// 💬 8. GET COMMENTS
-router.get("/comments/:postId", async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from("comments")
-      .select(`*, profiles(username, avatar_url)`)
-      .eq("post_id", req.params.postId)
-      .order("created_at", { ascending: false });
-
-    if (error) throw error;
-
-    res.json({ success: true, data });
-
-  } catch (err) {
+    console.error("DELETE ERROR:", err.message);
     res.status(500).json({ success: false });
   }
 });
