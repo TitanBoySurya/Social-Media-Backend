@@ -11,7 +11,7 @@ router.post("/save", verifyToken, async (req, res) => {
     const { video_url, description } = req.body;
 
     if (!userId) return res.status(401).json({ success: false });
-    if (!video_url) return res.status(400).json({ success: false, message: "URL missing" });
+    if (!video_url) return res.status(400).json({ success: false });
 
     const { data, error } = await supabase
       .from("posts")
@@ -36,13 +36,12 @@ router.post("/save", verifyToken, async (req, res) => {
 });
 
 
-// ❤️ 2. TOGGLE LIKE (SAFE + ATOMIC)
+// ❤️ 2. TOGGLE LIKE (FINAL FIXED)
 router.post("/toggle-like/:postId", verifyToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const postId = req.params.postId;
 
-    // check like
     const { data: existing } = await supabase
       .from("likes")
       .select("*")
@@ -80,7 +79,42 @@ router.post("/toggle-like/:postId", verifyToken, async (req, res) => {
 });
 
 
-// 💬 3. ADD COMMENT
+// 🏠 3. HOME FEED (🔥 WITH isLiked FIX)
+router.get("/all", verifyToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const page = parseInt(req.query.page) || 1;
+    const limit = 10;
+    const from = (page - 1) * limit;
+
+    const { data, error } = await supabase
+      .from("posts")
+      .select(`
+        *,
+        profiles(username, avatar_url),
+        likes(user_id)
+      `)
+      .order("created_at", { ascending: false })
+      .range(from, from + limit - 1);
+
+    if (error) throw error;
+
+    // 🔥 Add isLiked
+    const formatted = data.map(post => ({
+      ...post,
+      isLiked: post.likes.some(like => like.user_id === userId)
+    }));
+
+    res.json({ success: true, data: formatted });
+
+  } catch (err) {
+    console.error("FEED ERROR:", err.message);
+    res.status(500).json({ success: false });
+  }
+});
+
+
+// 💬 4. ADD COMMENT
 router.post("/comment/:postId", verifyToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -88,7 +122,7 @@ router.post("/comment/:postId", verifyToken, async (req, res) => {
     const { comment_text } = req.body;
 
     if (!comment_text) {
-      return res.status(400).json({ success: false, message: "Empty comment" });
+      return res.status(400).json({ success: false });
     }
 
     const { data, error } = await supabase
@@ -99,7 +133,6 @@ router.post("/comment/:postId", verifyToken, async (req, res) => {
 
     if (error) throw error;
 
-    // ✅ increment comment count
     await supabase.rpc("increment_comments", { row_id: postId });
 
     res.json({ success: true, data });
@@ -110,7 +143,7 @@ router.post("/comment/:postId", verifyToken, async (req, res) => {
 });
 
 
-// 👁️ 4. VIEW COUNT
+// 👁️ 5. VIEW COUNT
 router.post("/view/:postId", async (req, res) => {
   try {
     const postId = req.params.postId;
@@ -118,29 +151,6 @@ router.post("/view/:postId", async (req, res) => {
     await supabase.rpc("increment_views", { row_id: postId });
 
     res.json({ success: true });
-
-  } catch (err) {
-    res.status(500).json({ success: false });
-  }
-});
-
-
-// 🏠 5. HOME FEED (PAGINATION)
-router.get("/all", async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = 10;
-    const from = (page - 1) * limit;
-
-    const { data, error } = await supabase
-      .from("posts")
-      .select(`*, profiles(username, avatar_url)`)
-      .order("created_at", { ascending: false })
-      .range(from, from + limit - 1);
-
-    if (error) throw error;
-
-    res.json({ success: true, data });
 
   } catch (err) {
     res.status(500).json({ success: false });
