@@ -3,16 +3,15 @@ const router = express.Router();
 const supabase = require("../config/supabaseClient");
 const verifyToken = require("../middleware/authMiddleware");
 
-// ===============================
-// 🚀 SAVE VIDEO
-// ===============================
+
+// 🚀 1. SAVE VIDEO
 router.post("/save", verifyToken, async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user?.id;
     const { video_url, description } = req.body;
 
-    if (!video_url)
-      return res.status(400).json({ success: false, message: "Video URL missing" });
+    if (!userId) return res.status(401).json({ success: false });
+    if (!video_url) return res.status(400).json({ success: false });
 
     const { data, error } = await supabase
       .from("posts")
@@ -27,15 +26,17 @@ router.post("/save", verifyToken, async (req, res) => {
       .select();
 
     if (error) throw error;
+
     res.json({ success: true, data });
+
   } catch (err) {
     console.error("SAVE ERROR:", err.message);
     res.status(500).json({ success: false });
   }
 });
 
-// ===============================
-// ❤️ TOGGLE LIKE (RPC-free)
+
+// ❤️ 2. TOGGLE LIKE (FINAL FIXED + SAFE)
 router.post("/toggle-like/:postId", verifyToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -49,57 +50,59 @@ router.post("/toggle-like/:postId", verifyToken, async (req, res) => {
       .maybeSingle();
 
     if (existing) {
+      // ❌ UNLIKE
       await supabase
         .from("likes")
         .delete()
         .eq("post_id", postId)
         .eq("user_id", userId);
 
-      // decrement likes_count directly
-      await supabase
-        .from("posts")
-        .update({ likes_count: supabase.raw("likes_count - 1") })
-        .eq("id", postId);
+      await supabase.rpc("decrement_likes", { row_id: postId });
 
-      if (req.io) req.io.emit("likeUpdated", { postId, userId, liked: false });
       return res.json({ success: true, liked: false });
+
+    } else {
+      // ❤️ LIKE (duplicate safe)
+      const { error } = await supabase
+        .from("likes")
+        .upsert(
+          [{ post_id: postId, user_id: userId }],
+          { onConflict: ["post_id", "user_id"] }
+        );
+
+      if (error) throw error;
+
+      await supabase.rpc("increment_likes", { row_id: postId });
+
+      return res.json({ success: true, liked: true });
     }
 
-    // insert like
-    await supabase.from("likes").insert([{ post_id: postId, user_id: userId }]);
-
-    // increment likes_count directly
-    await supabase
-      .from("posts")
-      .update({ likes_count: supabase.raw("likes_count + 1") })
-      .eq("id", postId);
-
-    if (req.io) req.io.emit("likeUpdated", { postId, userId, liked: true });
-    res.json({ success: true, liked: true });
   } catch (err) {
     console.error("LIKE ERROR:", err.message);
     res.status(500).json({ success: false });
   }
 });
 
-// ===============================
-// 🏠 HOME FEED (GLOBAL FEED - sabki videos)
-router.get(["/feed", "/all"], verifyToken, async (req, res) => {
+
+// 🏠 3. HOME FEED (OPTIMIZED + isLiked)
+router.get("/all", verifyToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const from = (page - 1) * limit;
-    const to = from + limit - 1;
 
+    const page = parseInt(req.query.page) || 1;
+    const limit = 10;
+    const from = (page - 1) * limit;
+
+    // 🔥 get posts
     const { data: posts, error } = await supabase
       .from("posts")
       .select(`*, profiles(username, avatar_url)`)
       .order("created_at", { ascending: false })
-      .range(from, to);
+      .range(from, from + limit - 1);
 
     if (error) throw error;
 
+    // 🔥 get user likes separately (FAST)
     const { data: likes } = await supabase
       .from("likes")
       .select("post_id")
@@ -107,178 +110,130 @@ router.get(["/feed", "/all"], verifyToken, async (req, res) => {
 
     const likedSet = new Set(likes.map(l => l.post_id));
 
-    const finalFeed = posts.map(post => ({
+    const formatted = posts.map(post => ({
       ...post,
       isLiked: likedSet.has(post.id)
     }));
 
-    res.json({ success: true, data: finalFeed, page, limit });
+    res.json({ success: true, data: formatted });
+
   } catch (err) {
     console.error("FEED ERROR:", err.message);
     res.status(500).json({ success: false });
   }
 });
 
-// ===============================
-// 👤 MY POSTS
-router.get("/my-posts", verifyToken, async (req, res) => {
-  try {
-    const { data } = await supabase
-      .from("posts")
-      .select("*")
-      .eq("user_id", req.user.id)
-      .order("created_at", { ascending: false });
-    res.json({ success: true, data });
-  } catch {
-    res.status(500).json({ success: false });
-  }
-});
 
-// ===============================
-// 📊 MY STATS
-router.get("/my-stats", verifyToken, async (req, res) => {
-  try {
-    const { count } = await supabase
-      .from("posts")
-      .select("*", { count: "exact", head: true })
-      .eq("user_id", req.user.id);
-    res.json({ success: true, posts: count || 0 });
-  } catch {
-    res.status(500).json({ success: false });
-  }
-});
-
-// ===============================
-// 💬 ADD COMMENT
+// 💬 4. ADD COMMENT
 router.post("/comment/:postId", verifyToken, async (req, res) => {
   try {
+    const userId = req.user.id;
+    const postId = req.params.postId;
     const { comment_text } = req.body;
-    if (!comment_text)
-      return res.status(400).json({ success: false, message: "Comment cannot be empty" });
 
-    const { data } = await supabase
+    if (!comment_text) {
+      return res.status(400).json({ success: false });
+    }
+
+    const { data, error } = await supabase
       .from("comments")
-      .insert([{
-        post_id: req.params.postId,
-        user_id: req.user.id,
-        comment_text
-      }])
+      .insert([{ post_id: postId, user_id: userId, comment_text }])
       .select(`*, profiles(username, avatar_url)`)
       .single();
 
-    // increment comments_count directly
-    await supabase
-      .from("posts")
-      .update({ comments_count: supabase.raw("comments_count + 1") })
-      .eq("id", req.params.postId);
+    if (error) throw error;
 
-    if (req.io) req.io.emit("commentAdded", { postId: req.params.postId, userId: req.user.id });
+    await supabase.rpc("increment_comments", { row_id: postId });
 
     res.json({ success: true, data });
-  } catch {
+
+  } catch (err) {
+    console.error("COMMENT ERROR:", err.message);
     res.status(500).json({ success: false });
   }
 });
 
-// ===============================
-// 👁️ VIEW COUNT
+
+// 💬 5. GET COMMENTS
+router.get("/comments/:postId", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("comments")
+      .select(`*, profiles(username, avatar_url)`)
+      .eq("post_id", req.params.postId)
+      .order("created_at", { ascending: false });
+
+    if (error) throw error;
+
+    res.json({ success: true, data });
+
+  } catch (err) {
+    res.status(500).json({ success: false });
+  }
+});
+
+
+// 👁️ 6. VIEW COUNT (OPTIMIZED)
 router.post("/view/:postId", async (req, res) => {
   try {
-    await supabase
-      .from("posts")
-      .update({ views_count: supabase.raw("views_count + 1") })
-      .eq("id", req.params.postId);
+    const postId = req.params.postId;
+
+    await supabase.rpc("increment_views", { row_id: postId });
 
     res.json({ success: true });
-  } catch {
+
+  } catch (err) {
     res.status(500).json({ success: false });
   }
 });
 
-// ===============================
-// 🔍 GLOBAL SEARCH (Users + Videos)
-router.get("/search/:query", verifyToken, async (req, res) => {
+
+// 👤 7. USER POSTS
+router.get("/user/:userId", async (req, res) => {
   try {
-    const query = req.params.query;
-
-    const { data: users } = await supabase
-      .from("profiles")
-      .select("id, username, avatar_url")
-      .ilike("username", `%${query}%`);
-
-    const { data: videos } = await supabase
+    const { data, error } = await supabase
       .from("posts")
-      .select(`*, profiles(username, avatar_url)`)
-      .ilike("description", `%${query}%`);
+      .select("*")
+      .eq("user_id", req.params.userId)
+      .order("created_at", { ascending: false });
 
-    res.json({ success: true, users, videos });
-  } catch {
+    if (error) throw error;
+
+    res.json({ success: true, data });
+
+  } catch (err) {
     res.status(500).json({ success: false });
   }
 });
 
-// ===============================
-// ❤️ FOLLOW / UNFOLLOW
-router.post("/follow/toggle/:userId", verifyToken, async (req, res) => {
+
+// 🗑 8. DELETE POST
+router.delete("/:id", verifyToken, async (req, res) => {
   try {
-    const followerId = req.user.id;
-    const followingId = req.params.userId;
+    const userId = req.user.id;
+    const postId = req.params.id;
 
-    if (followerId === followingId)
-      return res.status(400).json({ success: false, message: "Cannot follow yourself" });
+    const { data: post } = await supabase
+      .from("posts")
+      .select("video_url")
+      .eq("id", postId)
+      .single();
 
-    const { data: existing } = await supabase
-      .from("follows")
-      .select("id")
-      .eq("follower_id", followerId)
-      .eq("following_id", followingId)
-      .maybeSingle();
-
-    if (existing) {
-      await supabase
-        .from("follows")
-        .delete()
-        .eq("follower_id", followerId)
-        .eq("following_id", followingId);
-
-      return res.json({ success: true, following: false });
+    if (post) {
+      const file = post.video_url.split("/").pop();
+      await supabase.storage.from("yashora-videos").remove([file]);
     }
 
     await supabase
-      .from("follows")
-      .insert([{ follower_id: followerId, following_id: followingId }]);
+      .from("posts")
+      .delete()
+      .eq("id", postId)
+      .eq("user_id", userId);
 
-    return res.json({ success: true, following: true });
+    res.json({ success: true });
+
   } catch (err) {
-    console.error("FOLLOW ERROR:", err.message);
-    res.status(500).json({ success: false });
-  }
-});
-
-// 👥 GET FOLLOWERS
-router.get("/followers/:userId", async (req, res) => {
-  try {
-    const { data } = await supabase
-      .from("follows")
-      .select(`follower_id, profiles(username, avatar_url)`)
-      .eq("following_id", req.params.userId);
-
-    res.json({ success: true, data });
-  } catch {
-    res.status(500).json({ success: false });
-  }
-});
-
-// 👤 GET FOLLOWING
-router.get("/following/:userId", async (req, res) => {
-  try {
-    const { data } = await supabase
-      .from("follows")
-      .select(`following_id, profiles(username, avatar_url)`)
-      .eq("follower_id", req.params.userId);
-
-    res.json({ success: true, data });
-  } catch {
+    console.error("DELETE ERROR:", err.message);
     res.status(500).json({ success: false });
   }
 });
