@@ -111,8 +111,10 @@ app.use((req, res, next) => {
 // ===============================
 // 🚀 API ROUTES
 // ===============================
+// Auth routes (login, register, google login, profile, search)
 app.use("/api/auth", require("./routes/authRoutes"));
-app.use("/api/users", require("./routes/userRoutes"));
+
+// Post, follow, chat, notifications, monetization, system debug
 app.use("/api/posts", require("./routes/postRoutes"));
 app.use("/api/follow", require("./routes/followRoutes"));
 app.use("/api/chat", require("./routes/chatRoutes"));
