@@ -7,6 +7,8 @@ const { Server } = require("socket.io");
 const cors = require("cors");
 const morgan = require("morgan");
 const multer = require("multer");
+const analyticsRoutes = require("./routes/analyticsRoutes");
+const paymentRoutes = require("./routes/paymentRoutes");
 
 const app = express();
 const server = http.createServer(app);
@@ -119,6 +121,8 @@ app.use("/api/chat", require("./routes/chatRoutes"));
 app.use("/api/notifications", require("./routes/notificationRoutes"));
 app.use("/api/monetization", require("./routes/monetizationRoutes"));
 app.use("/api/system", require("./routes/systemDebugRoutes"));
+app.use("/api/analytics", analyticsRoutes);
+app.use("/api/payments", paymentRoutes);
 
 // ===============================
 // ❌ GLOBAL ERROR HANDLER
