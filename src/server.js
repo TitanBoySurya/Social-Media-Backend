@@ -1,12 +1,14 @@
 require("dotenv").config();
 require("./config/supabaseClient");
 
+
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
 const morgan = require("morgan");
 const multer = require("multer");
+
 const analyticsRoutes = require("./routes/analyticsRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 
@@ -19,7 +21,7 @@ const server = http.createServer(app);
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 100 * 1024 * 1024 // 100MB
+    fileSize: 50 * 1024 * 1024 // 🔥 reduce to 50MB (safer)
   }
 });
 app.set("upload", upload);
@@ -29,7 +31,7 @@ app.set("upload", upload);
 // ===============================
 const io = new Server(server, {
   cors: {
-    origin: "*",
+    origin: "*", // 👉 production me domain dalna
     methods: ["GET", "POST"]
   }
 });
@@ -37,12 +39,17 @@ const io = new Server(server, {
 // ===============================
 // 🔥 MIDDLEWARE
 // ===============================
-app.use(cors());
-app.use(express.json({ limit: "50mb" }));
+app.use(cors({
+  origin: "*", // 👉 production me restrict karo
+  credentials: true
+}));
+
+app.use(express.json({ limit: "20mb" }));
 app.use(express.urlencoded({
   extended: true,
-  limit: "50mb"
+  limit: "20mb"
 }));
+
 app.use(morgan("dev"));
 
 // ===============================
@@ -82,7 +89,6 @@ io.on("connection", (socket) => {
     io.emit("getOnlineUsers", onlineUsers);
   });
 
-  // 🔥 REALTIME LIKE EVENT
   socket.on("likePost", ({ postId, userId }) => {
     socket.broadcast.emit("likeUpdated", {
       postId,
@@ -123,6 +129,16 @@ app.use("/api/monetization", require("./routes/monetizationRoutes"));
 app.use("/api/system", require("./routes/systemDebugRoutes"));
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/payments", paymentRoutes);
+
+// ===============================
+// ❌ 404 HANDLER (IMPORTANT)
+// ===============================
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: "API route not found"
+  });
+});
 
 // ===============================
 // ❌ GLOBAL ERROR HANDLER
