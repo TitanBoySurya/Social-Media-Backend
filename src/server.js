@@ -1,5 +1,6 @@
 require("dotenv").config();
 require("./config/supabaseClient");
+require("./config/redisClient");
 
 
 const express = require("express");
