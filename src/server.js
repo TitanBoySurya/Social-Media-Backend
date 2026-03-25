@@ -9,9 +9,11 @@ const { Server } = require("socket.io");
 const cors = require("cors");
 const morgan = require("morgan");
 const multer = require("multer");
-
+const { apiLimiter } = require("./middleware/rateLimiter");
 const analyticsRoutes = require("./routes/analyticsRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
+const postRoutes = require("./routes/postRoutes");
+
 
 const app = express();
 const server = http.createServer(app);
@@ -130,6 +132,9 @@ app.use("/api/monetization", require("./routes/monetizationRoutes"));
 app.use("/api/system", require("./routes/systemDebugRoutes"));
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/payments", paymentRoutes);
+app.use("/api", apiLimiter);
+
+app.use("/api/posts", postRoutes);
 
 // ===============================
 // ❌ 404 HANDLER (IMPORTANT)
